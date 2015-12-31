@@ -1,6 +1,7 @@
 'use strict';
 var fs = require('fs');
 var path = require('path');
+ var urlModule = require('url');
 var _ = require('lodash');
 var tmpl = require('blueimp-tmpl').tmpl;
 var Promise = require('bluebird');
@@ -101,6 +102,8 @@ HtmlWebpackPlugin.prototype.getTemplateContent = function(compilation, templateP
   if (!templateFile) {
     // Use a special index file to prevent double script / style injection if the `inject` option is truthy
     templateFile = path.join(__dirname, self.options.inject ? 'default_inject_index.html' : 'default_index.html');
+  } else {
+    templateFile = path.normalize(templateFile);
   }
   compilation.fileDependencies.push(templateFile);
   return fs.readFileAsync(templateFile, 'utf8')
@@ -167,16 +170,42 @@ HtmlWebpackPlugin.prototype.addFileToAssets = function(compilation, filename) {
   });
 };
 
+/**
+ * Helper to sort chunks
+ */
+HtmlWebpackPlugin.prototype.sortChunks = function(chunks, sortMode) {
+  // Sort mode auto by default:
+  if (typeof sortMode === 'undefined' || sortMode === 'auto') {
+    return chunks.sort(function orderEntryLast(a, b) {
+      if (a.entry !== b.entry) {
+        return b.entry ? 1 : -1;
+      } else {
+        return b.id - a.id;
+      }
+    });
+  }
+  // Disabled sorting:
+  if (sortMode === 'none') {
+    return chunks;
+  }
+  // Custom function
+  if (typeof sortMode === 'function') {
+    return chunks.sort(sortMode);
+  }
+  // Invalid sort mode
+  throw new Error('"' + sortMode + '" is not a valid chunk sort mode');
+};
+
 HtmlWebpackPlugin.prototype.htmlWebpackPluginAssets = function(compilation, webpackStatsJson, includedChunks, excludedChunks) {
   var self = this;
 
   // Use the configured public path or build a relative path
   var publicPath = typeof compilation.options.output.publicPath !== 'undefined' ?
-      compilation.options.output.publicPath :
+      compilation.mainTemplate.getPublicPath({hash: webpackStatsJson.hash}) :
       path.relative(path.dirname(self.options.filename), '.');
 
   if (publicPath.length && publicPath.substr(-1, 1) !== '/') {
-    publicPath += '/';
+    publicPath = path.join(urlModule.resolve(publicPath + '/', '.'), '/');
   }
 
   var assets = {
@@ -200,13 +229,8 @@ HtmlWebpackPlugin.prototype.htmlWebpackPluginAssets = function(compilation, webp
     assets.favicon = self.appendHash(assets.favicon, webpackStatsJson.hash);
   }
 
-  var chunks = webpackStatsJson.chunks.sort(function orderEntryLast(a, b) {
-    if (a.entry !== b.entry) {
-      return b.entry ? 1 : -1;
-    } else {
-      return b.id - a.id;
-    }
-  });
+  // Get sorted chunks
+  var chunks = HtmlWebpackPlugin.prototype.sortChunks(webpackStatsJson.chunks, this.options.chunksSortMode);
 
   for (var i = 0; i < chunks.length; i++) {
     var chunk = chunks[i];
@@ -214,6 +238,11 @@ HtmlWebpackPlugin.prototype.htmlWebpackPluginAssets = function(compilation, webp
 
     // This chunk doesn't have a name. This script can't handled it.
     if(chunkName === undefined) {
+      continue;
+    }
+
+    // Skip not initial chunks
+    if (!chunk.initial) {
       continue;
     }
 
